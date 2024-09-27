@@ -10,6 +10,10 @@ from pyboy_environment.environments.pokemon import pokemon_constants as pkc
 
 import cv2
 
+from sklearn.neighbors import KNeighborsClassifier
+
+import hnswlib
+
 
 class PokemonBrock(PokemonEnvironment):
     def __init__(
@@ -50,8 +54,18 @@ class PokemonBrock(PokemonEnvironment):
         )
 
         self.discovered_maps = set()
-        self.discovered_screens = []
-    
+
+        self.labels = []
+        self.num_discovered_screens = 0
+
+        # Initialize the hnswlib index
+        #self.knn_index = hnswlib.Index(space='l2', dim=144*160)  
+        self.knn_index = hnswlib.Index(space='l2', dim=101*101) # 100x100 frame size = 10,000 dimensions
+        self.knn_index.init_index(max_elements=200000, ef_construction=200, M=16)  # Adjust max_elements as needed
+        self.similar_frame_dist = 0.5  # Similarity threshold for adding new frames
+
+        # Track if the index is empty
+        self.index_initialized = False
     '''
     ---------------------
     USEFUL DEBUGGING CODE
@@ -103,50 +117,71 @@ class PokemonBrock(PokemonEnvironment):
         # Retireve raw pixel values of current screen
         pixels = self.pyboy.screen.ndarray
 
+        #pixels = cv2.cvtColor(pixels, cv2.COLOR_RGBA2GRAY)
+
         # Extracts AND converts image to GRAYSCALE from RGBA (4 channels)
         center_pixels = self.extract_center_pixels(pixels, size=100)
 
+        #print(center_pixels.shape)
+
         #self.display_window(center_pixels)
+
+        # Flatten the grayscale 100x100 frame into a 1D vector (for kNN)
+        frame_vector = center_pixels.flatten()
+
+        #print("Frame vector size bitchhhhh: ", frame_vector.shape)
+        #self.inf_loop()
 
         reward = 0
 
-        if self.is_new_screen(center_pixels):
-            self.discovered_screens.append(center_pixels)
+        # Check if the current frame is new by querying the hnswlib model
+        if self.is_new_screen(frame_vector, 0.75):
+            # Add the frame to the hnswlib index
+            self.update_frame_knn_index(frame_vector)
             reward += 1  # Reward for discovering a new frame
-        else:
-            reward -= 100 # Heavily affecting reward if no new frames found
 
-        # If no new location is discovered, calculate the badge difference
         return reward
         return new_state["badges"] - self.prior_game_stats["badges"]
     
-    def is_new_screen(self, current_frame, threshold=0.8):
+    def is_new_screen(self, frame_vector, threshold=0.5):
         """
-        Compares the current frame to all previously discovered frames and checks if at least
-        `threshold` (80%) of the pixels are different.
+        Compares the current frame vector to all previously discovered frames using hnswlib.
         Args:
-            current_frame: The current 100x100 screen frame (numpy array).
-            threshold: The percentage difference required to consider the frame new.
+            frame_vector: The flattened 100x100 grayscale frame (numpy array).
+            threshold: The distance threshold for determining if a frame is new (higher = more different).
         Returns:
             bool: True if the current frame is new, False otherwise.
         """
-        if not self.discovered_screens:
-            # If no discovered screens exist, this is the first screen
+        # If no discovered frames exist, this is the first frame
+        if not self.index_initialized:
             return True
 
-        total_pixels = current_frame.size  # Total number of pixels in the grayscale frame
-        for discovered_frame in self.discovered_screens:
-            # Calculate the number of different pixels
-            num_different_pixels = np.sum(current_frame != discovered_frame)
-            percent_different = num_different_pixels / total_pixels
+        # Query the hnswlib index for the nearest neighbor
+        labels, distances = self.knn_index.knn_query(frame_vector, k=1)
 
-            # If more than `threshold` percent pixels are different, consider it new
-            if percent_different >= threshold:
-                
-                return True
+        # Normalize the distance based on the vector size
+        normalized_distance = distances[0][0] / len(frame_vector)
 
-        # If none of the previously discovered frames are sufficiently different, it's not new
-        return False
+        # If the distance is above the threshold, it is a new frame
+        return normalized_distance >= threshold
+    
+    def update_frame_knn_index(self, frame_vec):
+        """
+        Updates the hnswlib index with the new frame.
+        Args:
+            frame_vec: The flattened frame vector to be added.
+        """
+        if not self.index_initialized:
+            # Initialize the index by adding the first frame
+            self.knn_index.add_items(frame_vec, np.array([self.knn_index.get_current_count()]))
+            self.index_initialized = True
+        else:
+            # Directly add the frame to the index without checking threshold again
+            self.knn_index.add_items(frame_vec, np.array([self.knn_index.get_current_count()]))
+
+        # Increment the discovered screens count and add to labels
+        self.num_discovered_screens += 1
+        self.labels.append(self.num_discovered_screens)
 
     def _check_if_done(self, game_stats: dict[str, any]) -> bool:
         # Setting done to true if agent beats first gym (temporary)
