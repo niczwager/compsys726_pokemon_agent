@@ -90,6 +90,8 @@ class PokemonBrock(PokemonEnvironment):
 
         self.prev_x, self.prev_y = None, None
 
+        self.prev_frame = None
+
     '''
     ---------------------
     USEFUL DEBUGGING CODE
@@ -226,8 +228,22 @@ class PokemonBrock(PokemonEnvironment):
         # Implement your reward calculation logic here
 
         # 8200 -> trains but gets stuck at water/ NPC
-        # 8300 -> doesn't train fucking cunt
-        threshold = 8250.0
+        # 8300 -> doesn't train 
+        # 8250 -> trains with x and y reward also there
+
+        # 1,000,000 -> too large, doesn't train
+        # 500_000 -> trains until NPC
+        # 750_000 -> doesn't train
+        # 600_000 -> trains until NPC
+        # 700_000 -> doesn't train
+        # 650_000 -> doesn't train
+        threshold = 500_000.0
+
+        # LARGER THRESHOLD = FRAMES ARE REQUIRED TO BE MORE DIFFERENT
+        # 0.35 -> trains 2 just reach NPCs
+        # 0.4 -> doesn't train
+
+        similarity_threshold = 0.375
 
         x_pos = new_state["location"]["x"]
         y_pos = new_state["location"]["y"]
@@ -237,20 +253,35 @@ class PokemonBrock(PokemonEnvironment):
         pixels = self.pyboy.screen.ndarray
         resized_frame = self.extract_and_resize_pixels(pixels)  # Resize to 42x42 RGB
 
+        pixels_RGB = cv2.cvtColor(pixels, cv2.COLOR_RGBA2RGB)
+
         # Stack the new frame with recent frames
         #frame_stack_vector = self.stack_frames(resized_frame)
 
         reward = 0
 
-        if x_pos != self.prev_x or y_pos != self.prev_y:
-            reward += 1
-
-        # Check if the current stacked frame is new by querying the hnswlib model
+          # Check if the current frame is new by querying the hnswlib model
         if self.is_new_screen(resized_frame, threshold):
-            self.update_frame_knn_index(resized_frame)
-            reward += 10
+            # After passing KNN, compare the current frame with the previous frame for similarity
+            if self.prev_frame is not None:
+                # IF FRAMES ARE SIMILAR YOU WOULD EXPECT A LOW DIFF
+                diff = np.mean(self.prev_frame != pixels_RGB)
+                
+                # If frames are sufficiently different, give the reward
+                if diff > similarity_threshold:
+                    self.update_frame_knn_index(resized_frame)
+                    reward += 1
+                else:
+                    pass
+                    #print('KNN reached, but direct pixel match not reached')
+                    #print(diff)
+            else:
+                # If there's no previous frame, just give the reward
+                self.update_frame_knn_index(resized_frame)
+                reward += 1
 
         self.prev_x, self.prev_y = x_pos, y_pos
+        self.prev_frame = pixels_RGB
 
         return reward
         return new_state["badges"] - self.prior_game_stats["badges"]
