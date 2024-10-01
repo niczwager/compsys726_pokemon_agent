@@ -10,9 +10,19 @@ from pyboy_environment.environments.pokemon import pokemon_constants as pkc
 
 import cv2
 
-from sklearn.neighbors import KNeighborsClassifier
-
 import hnswlib
+
+from skimage.transform import resize
+
+'''
+TODO:
+- get this fucking cunt training
+- the current issue is the animated section
+- play around with what image size can be used that it trains and leaves out sufficient detail so the animation doesn't trip a difference
+    - rectangular section cut off?
+    - direct sprite find?
+    - looks like the issue is the NPC - this is realtively constant so is there a way to filter this out?
+'''
 
 
 class PokemonBrock(PokemonEnvironment):
@@ -21,6 +31,7 @@ class PokemonBrock(PokemonEnvironment):
         act_freq: int,
         emulation_speed: int = 0,
         headless: bool = False,
+        frame_stacks: int = 3  # Added
     ) -> None:
 
         valid_actions: list[WindowEvent] = [
@@ -30,7 +41,7 @@ class PokemonBrock(PokemonEnvironment):
             WindowEvent.PRESS_ARROW_UP,
             WindowEvent.PRESS_BUTTON_A,
             WindowEvent.PRESS_BUTTON_B,
-            WindowEvent.PRESS_BUTTON_START,
+            #WindowEvent.PRESS_BUTTON_START,
         ]
 
         release_button: list[WindowEvent] = [
@@ -40,7 +51,7 @@ class PokemonBrock(PokemonEnvironment):
             WindowEvent.RELEASE_ARROW_UP,
             WindowEvent.RELEASE_BUTTON_A,
             WindowEvent.RELEASE_BUTTON_B,
-            WindowEvent.RELEASE_BUTTON_START,
+            #WindowEvent.RELEASE_BUTTON_START,
         ]
 
         super().__init__(
@@ -66,17 +77,19 @@ class PokemonBrock(PokemonEnvironment):
         self.downsize_x = 144 // 2
         self.downsize_y = 160 // 2
 
-        # Initialize the hnswlib index
-        #self.knn_index = hnswlib.Index(space='l2', dim=144*160)  
-        #self.knn_index = hnswlib.Index(space='l2', dim=(self.original_x//self.kernel_size[0])*(self.original_y//self.kernel_size[1]))  
-        self.knn_index = hnswlib.Index(space='l2', dim=101*101) # 100x100 frame size = 10,000 dimensions
-        self.knn_index.init_index(max_elements=200000, ef_construction=200, M=16)  # Adjust max_elements as needed
-        self.similar_frame_dist = 0.5  # Similarity threshold for adding new frames
+        self.frame_stacks = frame_stacks  # Frame stacking for internal use
+        self.recent_frames = np.zeros((self.frame_stacks, 42, 42, 3), dtype=np.uint8)  # Store stacked frames
+
+        # Initialize the hnswlib index to use single frames (42x42x3) 
+        self.knn_index = hnswlib.Index(space='l2', dim=42*42*3)  # Single frame dimension
+        self.knn_index.init_index(max_elements=20000, ef_construction=100, M=16)
 
         # Track if the index is empty
         self.index_initialized = False
-
         self.prev_frame = None
+
+        self.prev_x, self.prev_y = None, None
+
     '''
     ---------------------
     USEFUL DEBUGGING CODE
@@ -105,7 +118,7 @@ class PokemonBrock(PokemonEnvironment):
         assert height == 144 and width == 160 and channels == 4, "Unexpected screen dimensions."
 
         # Convert the RGBA image to grayscale
-        grayscale_pixels = cv2.cvtColor(pixels, cv2.COLOR_RGBA2GRAY)
+        grayscale_pixels = cv2.cvtColor(pixels, cv2.COLOR_RGBA2RGB)
 
         # Compute the center
         center_y, center_x = height // 2, width // 2
@@ -114,17 +127,30 @@ class PokemonBrock(PokemonEnvironment):
         # Slice the center 25x25 region (grayscale, so single channel)
         return grayscale_pixels[center_y - half_size:center_y + half_size + 1, 
                                 center_x - half_size:center_x + half_size + 1]
-    
-    def max_pooling_image(self, image):
 
-        # Convert to grayscale
-        grayscale_image = cv2.cvtColor(image, cv2.COLOR_RGBA2GRAY)
+    def extract_and_resize_pixels(self, pixels, target_size=(42, 42)):
+        """
+        Extracts the entire game screen and resizes it to 42x42 pixels in RGB.
+        Args:
+            pixels: The original screen's pixel array (expected to be 144x160x4).
+            target_size: The target size for resizing (default is (42, 42)).
+        Returns:
+            Flattened numpy array of size (target_size[0] * target_size[1] * 3).
+        """
+        height, width, channels = pixels.shape
+        assert height == 144 and width == 160 and channels == 4, "Unexpected screen dimensions."
 
-        # Downscale using cv2.INTER_AREA (good for reducing images, like pooling)
-        output_size = (grayscale_image.shape[1] // self.kernel_size[1], grayscale_image.shape[0] // self.kernel_size[0])
-        pooled_image = cv2.resize(grayscale_image, output_size, interpolation=cv2.INTER_AREA)
+        # Convert from RGBA to RGB (dropping the alpha channel)
+        rgb_pixels = cv2.cvtColor(pixels, cv2.COLOR_RGBA2RGB)
 
-        return pooled_image
+        # Resize the entire image to the target size (42x42)
+        resized_pixels = resize(rgb_pixels, target_size, anti_aliasing=True, preserve_range=True)
+
+        # Convert the resized image back to uint8 (since resize returns float64)
+        resized_pixels = resized_pixels.astype(np.uint8)
+
+        # Return the flattened 42x42x3 array (RGB)
+        return resized_pixels.flatten()
 
     def is_new_screen(self, frame_vector, threshold):
         """
@@ -143,10 +169,10 @@ class PokemonBrock(PokemonEnvironment):
         labels, distances = self.knn_index.knn_query(frame_vector, k=1)
 
         # Normalize the distance based on the vector size
-        normalized_distance = distances[0][0] / len(frame_vector)
+        #normalized_distance = distances[0] / len(frame_vector)
 
         # If the distance is above the threshold, it is a new frame
-        return normalized_distance >= threshold
+        return distances[0][0] > threshold
     
     def update_frame_knn_index(self, frame_vec):
         """
@@ -166,17 +192,23 @@ class PokemonBrock(PokemonEnvironment):
         self.num_discovered_screens += 1
         self.labels.append(self.num_discovered_screens)
 
-    def calculate_frame_diff(self, frame_1, frame_2, threshold):
-        # Compare the two frames element-wise to see where they are identical
-        identical_pixels = np.sum(frame_1 == frame_2)
+    def stack_frames(self, new_frame):
+        """
+        Update the frame stack by adding the new frame and removing the oldest.
+        Args:
+            new_frame: The newly captured frame (42x42x3).
+        Returns:
+            A flattened version of the stacked frames (42x42x3*self.frame_stacks).
+        """
+        # Reshape the new frame back into (42, 42, 3)
+        reshaped_frame = new_frame.reshape(42, 42, 3)
 
-        # Calculate the percentage of identical pixels
-        percent_identical = identical_pixels / len(frame_1)
+        # Shift frames and add the new frame
+        self.recent_frames = np.roll(self.recent_frames, 1, axis=0)
+        self.recent_frames[0] = reshaped_frame
 
-        #print("Percentage difference is: ", percent_identical)
-
-        # Check if the percentage of identical pixels is above the threshold
-        return percent_identical < threshold
+        # Return the stacked frames as a flattened array
+        return self.recent_frames.flatten()
 
     '''
     --------------------------------
@@ -193,7 +225,9 @@ class PokemonBrock(PokemonEnvironment):
     def _calculate_reward(self, new_state: dict) -> float:
         # Implement your reward calculation logic here
 
-        threshold = 0.9
+        # 8200 -> trains but gets stuck at water/ NPC
+        # 8300 -> doesn't train fucking cunt
+        threshold = 8250.0
 
         x_pos = new_state["location"]["x"]
         y_pos = new_state["location"]["y"]
@@ -201,35 +235,22 @@ class PokemonBrock(PokemonEnvironment):
 
         # Retireve raw pixel values of current screen
         pixels = self.pyboy.screen.ndarray
+        resized_frame = self.extract_and_resize_pixels(pixels)  # Resize to 42x42 RGB
 
-        #pixels = cv2.cvtColor(pixels, cv2.COLOR_RGBA2GRAY)
-
-        center_pixels = self.extract_center_pixels(pixels, size=100)
-
-        #max_pool_img = self.max_pooling_image(pixels)
-
-        #self.display_window(max_pool_img)
-
-        # Flatten the grayscale 100x100 frame into a 1D vector (for kNN)
-        frame_vector = center_pixels.flatten()
+        # Stack the new frame with recent frames
+        #frame_stack_vector = self.stack_frames(resized_frame)
 
         reward = 0
 
-        # Check if the current frame is new by querying the hnswlib model
-        if self.is_new_screen(frame_vector, threshold):
-            # Add the frame to the hnswlib index
-            self.update_frame_knn_index(frame_vector)
-
+        if x_pos != self.prev_x or y_pos != self.prev_y:
             reward += 1
 
-            '''
-            if self.prev_frame is not None:
-                if self.calculate_frame_diff(frame_vector, self.prev_frame, 0.5):
+        # Check if the current stacked frame is new by querying the hnswlib model
+        if self.is_new_screen(resized_frame, threshold):
+            self.update_frame_knn_index(resized_frame)
+            reward += 10
 
-                    reward += 1  # Reward for discovering a new frame
-            '''
-
-        self.prev_frame = frame_vector
+        self.prev_x, self.prev_y = x_pos, y_pos
 
         return reward
         return new_state["badges"] - self.prior_game_stats["badges"]
