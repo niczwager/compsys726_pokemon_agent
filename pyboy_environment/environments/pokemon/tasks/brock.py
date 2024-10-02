@@ -81,7 +81,7 @@ class PokemonBrock(PokemonEnvironment):
         self.recent_frames = np.zeros((self.frame_stacks, 42, 42, 3), dtype=np.uint8)  # Store stacked frames
 
         # Initialize the hnswlib index to use single frames (42x42x3) 
-        self.knn_index = hnswlib.Index(space='l2', dim=42*42*3)  # Single frame dimension
+        self.knn_index = hnswlib.Index(space='l2', dim=144*160*3)  # Single frame dimension
         self.knn_index.init_index(max_elements=20000, ef_construction=100, M=16)
 
         # Track if the index is empty
@@ -227,17 +227,32 @@ class PokemonBrock(PokemonEnvironment):
     def _calculate_reward(self, new_state: dict) -> float:
         # Implement your reward calculation logic here
 
-        # 8200 -> trains but gets stuck at water/ NPC
-        # 8300 -> doesn't train 
-        # 8250 -> trains with x and y reward also there
+        '''
+        Potential ideas:
+        - small negative reward 
+        
+        '''
 
-        # 1,000,000 -> too large, doesn't train
-        # 500_000 -> trains until NPC
-        # 750_000 -> doesn't train
-        # 600_000 -> trains until NPC
-        # 700_000 -> doesn't train
-        # 650_000 -> doesn't train
-        threshold = 500_000.0
+        # 500_000 -> trains until NPCs
+        # 600_000 -> trains until NPCs
+        # 800_000 -> doesn't train
+        # 700_000 -> trains until NPCs
+        # 750_000 -> trains until NPCs
+        # 775_000 -> trains until NPCs
+        # 787_500 -> doesn't train
+        # 781_250 -> doesn't train
+        # 778_125 -> trains until NPCs
+        # 779_687.5 -> trains until NPCs
+        # 780_500.0 -> doesn't train
+        # 780_000 -> trains until NPCs
+        # 780_250 -> trains until NPCs
+        # 780_375 -> doesn't train
+        # 780_312.5 -> doesn't train
+        # 780_281.25 -> trains until NPCs
+        # 780_296.875 -> trains until NPCs
+        # 780_300 -> doesn't train
+        # 780_298 -> trains until NPCs
+        threshold = 780_299
 
         # LARGER THRESHOLD = FRAMES ARE REQUIRED TO BE MORE DIFFERENT
         # 0.35 -> trains 2 just reach NPCs
@@ -254,11 +269,24 @@ class PokemonBrock(PokemonEnvironment):
         resized_frame = self.extract_and_resize_pixels(pixels)  # Resize to 42x42 RGB
 
         pixels_RGB = cv2.cvtColor(pixels, cv2.COLOR_RGBA2RGB)
+        pixels_RGB = pixels_RGB.flatten()
 
         # Stack the new frame with recent frames
         #frame_stack_vector = self.stack_frames(resized_frame)
 
         reward = 0
+
+        if self.is_new_screen(pixels_RGB, threshold):
+            self.update_frame_knn_index(pixels_RGB)
+            reward += 1
+
+        #if self.prev_x == x_pos and self.prev_y == y_pos:
+            #reward -= 0.1
+
+        '''
+        CHECKING PREVIOUS FRAME TO SEE IF IDENTICAL - DOESN'T SEEM TO WORK
+
+
 
           # Check if the current frame is new by querying the hnswlib model
         if self.is_new_screen(resized_frame, threshold):
@@ -279,9 +307,11 @@ class PokemonBrock(PokemonEnvironment):
                 # If there's no previous frame, just give the reward
                 self.update_frame_knn_index(resized_frame)
                 reward += 1
+        '''
 
         self.prev_x, self.prev_y = x_pos, y_pos
         self.prev_frame = pixels_RGB
+        
 
         return reward
         return new_state["badges"] - self.prior_game_stats["badges"]
