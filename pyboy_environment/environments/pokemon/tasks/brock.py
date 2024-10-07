@@ -71,7 +71,7 @@ class PokemonBrock(PokemonEnvironment):
         self.recent_frames = np.zeros((self.frame_stacks, 42, 42, 3), dtype=np.uint8)  # Store stacked frames
 
         # Initialize the hnswlib index to use single frames (42x42x3) 
-        self.knn_index = hnswlib.Index(space='l2', dim=144*160*3)  # Single frame dimension
+        self.knn_index = hnswlib.Index(space='l2', dim=144*(160//2)*3)  # Single frame dimension
         self.knn_index.init_index(max_elements=20000, ef_construction=100, M=16)
 
         # Track if the index is empty
@@ -212,15 +212,15 @@ class PokemonBrock(PokemonEnvironment):
     def _calculate_reward(self, new_state: dict) -> float:
         # Implement your reward calculation logic here
         
-        #threshold = 780_299
-
-        # 100_000 -> doesn't train
-        # 10_000 -> trains until NPCs
-        # 50_000 -> doesn't train
-        # 25_000 -> doesn't train
-        # 17_500 -> doesn't train
-        # 15_000 -> doesn't train
-        threshold = 12_500
+        '''
+        CURRENT IDEA:
+        - only training on right half of the right image to see if that helps with NPC problem
+        '''
+        # 5000 -> doesn't train
+        # 1000 -> doesn't train
+        # 100 -> doesn't train
+        # 10 -> doesn't train
+        threshold = 100_000
 
         x_pos = new_state["location"]["x"]
         y_pos = new_state["location"]["y"]
@@ -232,16 +232,27 @@ class PokemonBrock(PokemonEnvironment):
         #resized_frame = self.extract_center_box_pixels(pixels, (100, 100))
 
         pixels_RGB = cv2.cvtColor(pixels, cv2.COLOR_RGBA2RGB)
-        pixels_RGB = pixels_RGB.flatten()
+        #pixels_RGB = pixels_RGB.flatten()
+
+        # Extract the right half of the screen (slice only the right half, adjust as needed)
+        height, width, _ = pixels_RGB.shape
+        right_half = pixels_RGB[:, width // 2:]
+
+        # Flatten the right half
+        right_half_flattened = right_half.flatten()
         
         reward = 0
 
         if self.prev_frame is not None:
-            diff = self.calculate_frame_difference(pixels_RGB, self.prev_frame)
+            prev_right_half = self.prev_frame[:, width // 2:]
+            prev_right_half_flattened = prev_right_half.flatten()
+
+            # Calculate the difference between the right halves
+            diff = self.calculate_frame_difference(right_half_flattened, prev_right_half_flattened)
 
             if self.is_new_screen(diff, threshold):
                 self.update_frame_knn_index(diff)
-                #self.display_window([diff.reshape(144,160,3), pixels_RGB.reshape(144,160,3), self.prev_frame.reshape(144,160,3)])
+                #self.display_window([diff.reshape(144,160//2,3), right_half_flattened.reshape(144,160//2,3), prev_right_half_flattened.reshape(144,160//2,3)])
                 reward += 1
 
         self.prev_x, self.prev_y = x_pos, y_pos
