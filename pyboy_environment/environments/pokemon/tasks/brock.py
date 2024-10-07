@@ -80,8 +80,6 @@ class PokemonBrock(PokemonEnvironment):
 
         self.prev_x, self.prev_y = None, None
 
-        self.prev_frame = None
-
     '''
     ---------------------
     USEFUL DEBUGGING CODE
@@ -91,13 +89,18 @@ class PokemonBrock(PokemonEnvironment):
         while True:
             pass
         
-    def display_window(self, pixels):
-        cv2.imshow("PNG", pixels)
+    def display_window(self, screens):
+        # Iterate through the list of screens and display each in its own window
+        for i, pixels in enumerate(screens):
+            window_name = f"Screen {i+1}"
+            cv2.imshow(window_name, pixels)
 
+        # Wait for a key press to close all windows
         while True:
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
+        # Close all windows
         cv2.destroyAllWindows()
     
     '''
@@ -166,11 +169,7 @@ class PokemonBrock(PokemonEnvironment):
         # Query the hnswlib index for the nearest neighbor
         labels, distances = self.knn_index.knn_query(frame_vector, k=1)
 
-        '''
-        if distances[0][0] > threshold:
-            print(distances)
-            self.display_window(frame_vector.reshape((42,42,3)))
-        '''
+        #print(distances[0][0])
 
         # If the distance is above the threshold, it is a new frame
         return distances[0][0] > threshold
@@ -193,24 +192,10 @@ class PokemonBrock(PokemonEnvironment):
         self.num_discovered_screens += 1
         self.labels.append(self.num_discovered_screens)
 
-    def stack_frames(self, new_frame):
-        """
-        Update the frame stack by adding the new frame and removing the oldest.
-        Args:
-            new_frame: The newly captured frame (42x42x3).
-        Returns:
-            A flattened version of the stacked frames (42x42x3*self.frame_stacks).
-        """
-        # Reshape the new frame back into (42, 42, 3)
-        reshaped_frame = new_frame.reshape(42, 42, 3)
-
-        # Shift frames and add the new frame
-        self.recent_frames = np.roll(self.recent_frames, 1, axis=0)
-        self.recent_frames[0] = reshaped_frame
-
-        # Return the stacked frames as a flattened array
-        return self.recent_frames.flatten()
-
+    def calculate_frame_difference(self, current_frame, prev_frame):
+        """Calculate the absolute difference between the current and previous frames."""
+        return np.abs(current_frame - prev_frame)  # This preserves the original shape
+    
     '''
     --------------------------------
     ORIGINAL FUNCTIONS
@@ -223,31 +208,19 @@ class PokemonBrock(PokemonEnvironment):
         # print(game_stats["location"]["x"])
         return [game_stats["badges"]]
 
+ 
     def _calculate_reward(self, new_state: dict) -> float:
         # Implement your reward calculation logic here
-
-        # Using entire screen:
-        # 780_300 -> doesn't train
-        # 780_298 -> trains until NPCs
-        # 780_299 -> trains until NPCs
-
-        # 100x100
-        # 200_000 -> trains until NPCs
-        # 300_000 -> doesn't train
-        # 250_000 -> trains until NPCs
-        # 275_000 -> doesn't train
-
-        # Center 42x42 pixels -> DOESN'T SEEM TO TRAIN AT ALL
-        # 800_000 -> doesn't train
-        # 500_000 -> doesn't train
         
-        threshold = 780_299
+        #threshold = 780_299
 
-        # LARGER THRESHOLD = FRAMES ARE REQUIRED TO BE MORE DIFFERENT
-        # 0.35 -> trains 2 just reach NPCs
-        # 0.4 -> doesn't train
-
-        similarity_threshold = 0.375
+        # 100_000 -> doesn't train
+        # 10_000 -> trains until NPCs
+        # 50_000 -> doesn't train
+        # 25_000 -> doesn't train
+        # 17_500 -> doesn't train
+        # 15_000 -> doesn't train
+        threshold = 12_500
 
         x_pos = new_state["location"]["x"]
         y_pos = new_state["location"]["y"]
@@ -258,50 +231,18 @@ class PokemonBrock(PokemonEnvironment):
         #resized_frame = self.extract_and_resize_pixels(pixels, (100, 100))  
         #resized_frame = self.extract_center_box_pixels(pixels, (100, 100))
 
-        '''
-        IF USING ORIGINAL WHOLE IMAGE
-        '''
         pixels_RGB = cv2.cvtColor(pixels, cv2.COLOR_RGBA2RGB)
         pixels_RGB = pixels_RGB.flatten()
         
-
-        # Stack the new frame with recent frames
-        #frame_stack_vector = self.stack_frames(resized_frame)
-
         reward = 0
 
-        # TODO: add check of center pixels, if they are the same in both screens DON'T give this reward
-        if self.is_new_screen(pixels_RGB, threshold):
-            self.update_frame_knn_index(pixels_RGB)
-            reward += 1
+        if self.prev_frame is not None:
+            diff = self.calculate_frame_difference(pixels_RGB, self.prev_frame)
 
-        # Alternative to checking if x and y position has changed
-        #if self.prev_x != x_pos or self.prev_y != y_pos:
-            #reward *= 10
-
-        '''
-        CHECKING PREVIOUS FRAME TO SEE IF IDENTICAL - DOESN'T SEEM TO WORK
-
-          # Check if the current frame is new by querying the hnswlib model
-        if self.is_new_screen(resized_frame, threshold):
-            # After passing KNN, compare the current frame with the previous frame for similarity
-            if self.prev_frame is not None:
-                # IF FRAMES ARE SIMILAR YOU WOULD EXPECT A LOW DIFF
-                diff = np.mean(self.prev_frame != pixels_RGB)
-                
-                # If frames are sufficiently different, give the reward
-                if diff > similarity_threshold:
-                    self.update_frame_knn_index(resized_frame)
-                    reward += 1
-                else:
-                    pass
-                    #print('KNN reached, but direct pixel match not reached')
-                    #print(diff)
-            else:
-                # If there's no previous frame, just give the reward
-                self.update_frame_knn_index(resized_frame)
+            if self.is_new_screen(diff, threshold):
+                self.update_frame_knn_index(diff)
+                #self.display_window([diff.reshape(144,160,3), pixels_RGB.reshape(144,160,3), self.prev_frame.reshape(144,160,3)])
                 reward += 1
-        '''
 
         self.prev_x, self.prev_y = x_pos, y_pos
         self.prev_frame = pixels_RGB
