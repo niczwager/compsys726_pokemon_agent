@@ -14,16 +14,6 @@ import hnswlib
 
 from skimage.transform import resize
 
-'''
-TODO:
-- get this fucking cunt training
-- the current issue is the animated section
-- play around with what image size can be used that it trains and leaves out sufficient detail so the animation doesn't trip a difference
-    - rectangular section cut off?
-    - direct sprite find?
-    - looks like the issue is the NPC - this is realtively constant so is there a way to filter this out?
-'''
-
 
 class PokemonBrock(PokemonEnvironment):
     def __init__(
@@ -131,14 +121,7 @@ class PokemonBrock(PokemonEnvironment):
                                 center_x - half_size:center_x + half_size + 1]
 
     def extract_and_resize_pixels(self, pixels, target_size=(42, 42)):
-        """
-        Extracts the entire game screen and resizes it to 42x42 pixels in RGB.
-        Args:
-            pixels: The original screen's pixel array (expected to be 144x160x4).
-            target_size: The target size for resizing (default is (42, 42)).
-        Returns:
-            Flattened numpy array of size (target_size[0] * target_size[1] * 3).
-        """
+
         height, width, channels = pixels.shape
         assert height == 144 and width == 160 and channels == 4, "Unexpected screen dimensions."
 
@@ -153,16 +136,29 @@ class PokemonBrock(PokemonEnvironment):
 
         # Return the flattened 42x42x3 array (RGB)
         return resized_pixels.flatten()
+    
+    def extract_center_box_pixels(self, pixels, box_size=(42, 42)):
+
+        height, width, channels = pixels.shape
+        assert height == 144 and width == 160 and channels == 4, "Unexpected screen dimensions."
+
+        # Convert from RGBA to RGB (dropping the alpha channel)
+        rgb_pixels = cv2.cvtColor(pixels, cv2.COLOR_RGBA2RGB)
+
+        # Calculate the center of the image
+        center_y, center_x = height // 2, width // 2
+        box_half_height, box_half_width = box_size[0] // 2, box_size[1] // 2
+
+        # Extract the 42x42 box from the center of the image
+        center_box = rgb_pixels[center_y - box_half_height:center_y + box_half_height, 
+                                center_x - box_half_width:center_x + box_half_width]
+        
+        #self.display_window(center_box)
+
+        # Flatten the 42x42x3 array (RGB)
+        return center_box.flatten()
 
     def is_new_screen(self, frame_vector, threshold):
-        """
-        Compares the current frame vector to all previously discovered frames using hnswlib.
-        Args:
-            frame_vector: The flattened 100x100 grayscale frame (numpy array).
-            threshold: The distance threshold for determining if a frame is new (higher = more different).
-        Returns:
-            bool: True if the current frame is new, False otherwise.
-        """
         # If no discovered frames exist, this is the first frame
         if not self.index_initialized:
             return True
@@ -170,8 +166,11 @@ class PokemonBrock(PokemonEnvironment):
         # Query the hnswlib index for the nearest neighbor
         labels, distances = self.knn_index.knn_query(frame_vector, k=1)
 
-        # Normalize the distance based on the vector size
-        #normalized_distance = distances[0] / len(frame_vector)
+        '''
+        if distances[0][0] > threshold:
+            print(distances)
+            self.display_window(frame_vector.reshape((42,42,3)))
+        '''
 
         # If the distance is above the threshold, it is a new frame
         return distances[0][0] > threshold
@@ -227,31 +226,21 @@ class PokemonBrock(PokemonEnvironment):
     def _calculate_reward(self, new_state: dict) -> float:
         # Implement your reward calculation logic here
 
-        '''
-        Potential ideas:
-        - small negative reward 
-        
-        '''
-
-        # 500_000 -> trains until NPCs
-        # 600_000 -> trains until NPCs
-        # 800_000 -> doesn't train
-        # 700_000 -> trains until NPCs
-        # 750_000 -> trains until NPCs
-        # 775_000 -> trains until NPCs
-        # 787_500 -> doesn't train
-        # 781_250 -> doesn't train
-        # 778_125 -> trains until NPCs
-        # 779_687.5 -> trains until NPCs
-        # 780_500.0 -> doesn't train
-        # 780_000 -> trains until NPCs
-        # 780_250 -> trains until NPCs
-        # 780_375 -> doesn't train
-        # 780_312.5 -> doesn't train
-        # 780_281.25 -> trains until NPCs
-        # 780_296.875 -> trains until NPCs
+        # Using entire screen:
         # 780_300 -> doesn't train
         # 780_298 -> trains until NPCs
+        # 780_299 -> trains until NPCs
+
+        # 100x100
+        # 200_000 -> trains until NPCs
+        # 300_000 -> doesn't train
+        # 250_000 -> trains until NPCs
+        # 275_000 -> doesn't train
+
+        # Center 42x42 pixels -> DOESN'T SEEM TO TRAIN AT ALL
+        # 800_000 -> doesn't train
+        # 500_000 -> doesn't train
+        
         threshold = 780_299
 
         # LARGER THRESHOLD = FRAMES ARE REQUIRED TO BE MORE DIFFERENT
@@ -266,27 +255,32 @@ class PokemonBrock(PokemonEnvironment):
 
         # Retireve raw pixel values of current screen
         pixels = self.pyboy.screen.ndarray
-        resized_frame = self.extract_and_resize_pixels(pixels)  # Resize to 42x42 RGB
+        #resized_frame = self.extract_and_resize_pixels(pixels, (100, 100))  
+        #resized_frame = self.extract_center_box_pixels(pixels, (100, 100))
 
+        '''
+        IF USING ORIGINAL WHOLE IMAGE
+        '''
         pixels_RGB = cv2.cvtColor(pixels, cv2.COLOR_RGBA2RGB)
         pixels_RGB = pixels_RGB.flatten()
+        
 
         # Stack the new frame with recent frames
         #frame_stack_vector = self.stack_frames(resized_frame)
 
         reward = 0
 
+        # TODO: add check of center pixels, if they are the same in both screens DON'T give this reward
         if self.is_new_screen(pixels_RGB, threshold):
             self.update_frame_knn_index(pixels_RGB)
             reward += 1
 
-        #if self.prev_x == x_pos and self.prev_y == y_pos:
-            #reward -= 0.1
+        # Alternative to checking if x and y position has changed
+        #if self.prev_x != x_pos or self.prev_y != y_pos:
+            #reward *= 10
 
         '''
         CHECKING PREVIOUS FRAME TO SEE IF IDENTICAL - DOESN'T SEEM TO WORK
-
-
 
           # Check if the current frame is new by querying the hnswlib model
         if self.is_new_screen(resized_frame, threshold):
