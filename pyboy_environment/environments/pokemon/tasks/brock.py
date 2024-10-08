@@ -1,3 +1,4 @@
+
 from functools import cached_property
 
 import numpy as np
@@ -70,15 +71,23 @@ class PokemonBrock(PokemonEnvironment):
         self.frame_stacks = frame_stacks  # Frame stacking for internal use
         self.recent_frames = np.zeros((self.frame_stacks, 42, 42, 3), dtype=np.uint8)  # Store stacked frames
 
-        # Initialize the hnswlib index to use single frames (42x42x3) 
-        self.knn_index = hnswlib.Index(space='l2', dim=144*160*3)  # Single frame dimension
-        self.knn_index.init_index(max_elements=20000, ef_construction=100, M=16)
-
         # Track if the index is empty
         self.index_initialized = False
         self.prev_frame = None
 
         self.prev_x, self.prev_y = None, None
+
+        # PYBOY VARIBLES
+        self.levels_satisfied = False
+        self.output_shape = (42,42,3)
+        self.vec_dim = self.output_shape[0]*self.output_shape[1]*self.output_shape[2]
+        self.base_explore = 0
+        # 100_000 -> trains until NPCs
+        self.similar_frame_dist = 100_000.0
+
+        # Initialize the hnswlib index to use single frames (42x42x3) 
+        self.knn_index = hnswlib.Index(space='l2', dim=self.vec_dim)  # Single frame dimension
+        self.knn_index.init_index(max_elements=20000, ef_construction=100, M=16)
 
     '''
     ---------------------
@@ -174,6 +183,7 @@ class PokemonBrock(PokemonEnvironment):
         # If the distance is above the threshold, it is a new frame
         return distances[0][0] > threshold
     
+    '''
     def update_frame_knn_index(self, frame_vec):
         """
         Updates the hnswlib index with the new frame.
@@ -191,6 +201,35 @@ class PokemonBrock(PokemonEnvironment):
         # Increment the discovered screens count and add to labels
         self.num_discovered_screens += 1
         self.labels.append(self.num_discovered_screens)
+    '''
+
+    def update_frame_knn_index(self, frame_vec):
+        
+        '''
+        if self.get_levels_sum() >= 22 and not self.levels_satisfied:
+            self.levels_satisfied = True
+            self.base_explore = self.knn_index.get_current_count()
+            self.init_knn()
+        '''
+
+        if self.knn_index.get_current_count() == 0:
+            # if index is empty add current frame
+            self.knn_index.add_items(
+                frame_vec, np.array([self.knn_index.get_current_count()])
+            )
+
+            return True
+        else:
+            # check for nearest frame and add if current 
+            labels, distances = self.knn_index.knn_query(frame_vec, k = 1)
+            if distances[0] > self.similar_frame_dist:
+                self.knn_index.add_items(
+                    frame_vec, np.array([self.knn_index.get_current_count()])
+                )
+
+                return True
+        
+        return False
 
     def calculate_frame_difference(self, current_frame, prev_frame):
         """Calculate the absolute difference between the current and previous frames."""
@@ -198,7 +237,7 @@ class PokemonBrock(PokemonEnvironment):
     
     def is_box_identical(self, current_frame, prev_frame, box_size=20, offset=50):
         """
-        Check if a box of size `box_size` offset to the right by `offset` pixels from the center is identical
+        Check if a box of size box_size offset to the right by offset pixels from the center is identical
         between the current and previous frames.
         """
         height, width, _ = current_frame.shape
@@ -226,6 +265,19 @@ class PokemonBrock(PokemonEnvironment):
         # Check if the regions are identical
         return np.array_equal(box_current, box_prev)
     
+    def resize_frame(self, current_frame):
+        return (255*resize(current_frame, self.output_shape)).astype(np.uint8)
+    
+    def get_knn_reward(self):
+        pre_rew = 0.004
+        post_rew = 0.01
+        cur_size = self.knn_index.get_current_count()
+        base = (self.base_explore if self.levels_satisfied else cur_size) * pre_rew
+        post = (cur_size if self.levels_satisfied else 0) * post_rew
+        if post != 0:
+            print(post)
+        return base + post
+    
     '''
     --------------------------------
     ORIGINAL FUNCTIONS
@@ -242,14 +294,6 @@ class PokemonBrock(PokemonEnvironment):
     def _calculate_reward(self, new_state: dict) -> float:
         # Implement your reward calculation logic here
         
-        #threshold = 780_299
-
-        # 100_000 -> doesn't train
-        # 10_000 -> trains until NPCs
-        # 50_000 -> doesn't train
-        # 25_000 -> doesn't train
-        # 17_500 -> doesn't train
-        # 15_000 -> doesn't train
         threshold = 12_500
 
         x_pos = new_state["location"]["x"]
@@ -261,26 +305,15 @@ class PokemonBrock(PokemonEnvironment):
         #resized_frame = self.extract_and_resize_pixels(pixels, (100, 100))  
         #resized_frame = self.extract_center_box_pixels(pixels, (100, 100))
 
-        pixels_RGB = cv2.cvtColor(pixels, cv2.COLOR_RGBA2RGB)
+        pixels = cv2.cvtColor(pixels, cv2.COLOR_RGBA2RGB)
+        pixels = self.resize_frame(pixels)
         #pixels_RGB = pixels_RGB.flatten()
         
         reward = 0
 
-        if self.prev_frame is not None:
-            diff = self.calculate_frame_difference(pixels_RGB.flatten(), self.prev_frame.flatten())
-
-            if self.is_new_screen(diff, threshold):
-                self.update_frame_knn_index(diff)
-                #self.display_window([diff.reshape(144,160,3), pixels_RGB.reshape(144,160,3), self.prev_frame.reshape(144,160,3)])
-                reward += 1
-
-            if self.is_box_identical(pixels_RGB, self.prev_frame):
-                reward -= 0.1  # Give a small negative reward
-
-        self.prev_x, self.prev_y = x_pos, y_pos
-        self.prev_frame = pixels_RGB
+        if self.update_frame_knn_index(pixels.flatten()):
+            reward += self.get_knn_reward()
         
-
         return reward
         return new_state["badges"] - self.prior_game_stats["badges"]
 
