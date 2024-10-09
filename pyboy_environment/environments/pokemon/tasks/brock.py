@@ -83,6 +83,10 @@ class PokemonBrock(PokemonEnvironment):
         self.vec_dim = self.output_shape[0]*self.output_shape[1]*self.output_shape[2]
         self.base_explore = 0
         # 100_000 -> trains until NPCs
+        # 105_000 -> doesn't train
+        # 102_500 -> doesn't train
+        # 100_500 -> doesn't train
+        # 100_250 -> doesn't train
         self.similar_frame_dist = 100_000.0
 
         # Initialize the hnswlib index to use single frames (42x42x3) 
@@ -270,13 +274,11 @@ class PokemonBrock(PokemonEnvironment):
     
     def get_knn_reward(self):
         pre_rew = 0.004
-        post_rew = 0.01
+
         cur_size = self.knn_index.get_current_count()
         base = (self.base_explore if self.levels_satisfied else cur_size) * pre_rew
-        post = (cur_size if self.levels_satisfied else 0) * post_rew
-        if post != 0:
-            print(post)
-        return base + post
+
+        return base 
     
     '''
     --------------------------------
@@ -313,6 +315,13 @@ class PokemonBrock(PokemonEnvironment):
 
         if self.update_frame_knn_index(pixels.flatten()):
             reward += self.get_knn_reward()
+        
+        '''
+        if self.prev_x != x_pos or self.prev_y != y_pos:
+            reward *= 10
+
+        self.prev_x, self.prev_y = x_pos, y_pos
+        '''
         
         return reward
         return new_state["badges"] - self.prior_game_stats["badges"]
